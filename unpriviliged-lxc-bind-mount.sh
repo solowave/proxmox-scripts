@@ -8,9 +8,7 @@ cat <<"EOF"
    / __ )(_)___  ____/ /  /  |/  /___  __  ______  / /_
   / __  / / __ \/ __  /  / /|_/ / __ \/ / / / __ \/ __/
  / /_/ / / / / / /_/ /  / /  / / /_/ / /_/ / / / / /_  
-/_____/_/_/ /_/\__,_/  /_/  /_/\____/\__,_/_/ /_/\__/  
-                                                       
- 
+/_____/_/_/ /_/\__,_/  /_/  /_/\____/\__,_/_/ /_/\__/   
                                      
 EOF
 }
@@ -46,30 +44,31 @@ function prompt_for_input {
   fi
 }
 
-# Update permissions for bind-mount directory
-function update_permissions {
-  echo "Changing ownership of ${HOST_DIR} to container's high-mapped UID/GID (100000:100000)."
-  chown 100000:100000 ${HOST_DIR} -R
+# Use ACLs to grant access to the host directory for the container's high-mapped UID
+function set_permissions_via_acl {
+  # Get the high-mapped UID for the container (e.g., 100000, 101000, etc.)
+  HIGH_MAPPED_UID=$(( 100000 + ${CT_ID} ))
+  
+  # Apply ACL to grant the container's high-mapped UID access to the host directory
+  echo "Granting ACL permissions to UID ${HIGH_MAPPED_UID} for ${HOST_DIR}."
+  setfacl -m u:${HIGH_MAPPED_UID}:rwx ${HOST_DIR}
+  echo "ACL permissions set for container ${CT_ID} (UID ${HIGH_MAPPED_UID}) on ${HOST_DIR}."
 }
 
-# Create a non-root user in the container (optional)
-function create_non_root_user {
-  read -rp "Do you want to create a non-root user to access the mounted directory? (y/n): " CONFIRM_USER
-  if [[ "${CONFIRM_USER}" == "y" ]]; then
-    read -rp "Enter the username (default: binduser): " USERNAME
-    USERNAME=${USERNAME:-binduser}
-    pct exec ${CT_ID} -- useradd -m -s /bin/bash ${USERNAME}
-    echo "Created non-root user ${USERNAME} inside container."
-    NON_ROOT_USER=${USERNAME}
-  else
-    echo "Proceeding without creating a non-root user."
-    NON_ROOT_USER=""
+# Check if setfacl is installed in the container, install it if missing
+function install_acl_if_missing {
+  if ! pct exec ${CT_ID} -- which setfacl &> /dev/null; then
+    echo "setfacl is not installed. Installing acl package inside the container..."
+    pct exec ${CT_ID} -- apt update
+    pct exec ${CT_ID} -- apt install -y acl
+    echo "ACL package installed."
   fi
 }
 
-# Use ACL to assign access to the user
+# Use ACL to assign access to the directory for a non-root user (optional)
 function set_acl_permissions {
   if [[ -n "${NON_ROOT_USER}" ]]; then
+    install_acl_if_missing
     echo "Setting ACL permissions for ${NON_ROOT_USER} on ${CONTAINER_DIR}."
     pct exec ${CT_ID} -- setfacl -m u:${NON_ROOT_USER}:rwx ${CONTAINER_DIR}
     echo "ACL set successfully. User ${NON_ROOT_USER} now has access to ${CONTAINER_DIR}."
@@ -105,8 +104,7 @@ function restart_container {
 
 header_info
 prompt_for_input
-update_permissions
-create_non_root_user
+set_permissions_via_acl
 set_acl_permissions
 update_lxc_config
 create_symlink
