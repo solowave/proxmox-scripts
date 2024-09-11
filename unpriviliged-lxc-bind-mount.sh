@@ -3,12 +3,11 @@
 function header_info {
 clear
 cat <<"EOF"
-
     ____  _           __   __  ___                  __ 
    / __ )(_)___  ____/ /  /  |/  /___  __  ______  / /_
   / __  / / __ \/ __  /  / /|_/ / __ \/ / / / __ \/ __/
  / /_/ / / / / / /_/ /  / /  / / /_/ / /_/ / / / / /_  
-/_____/_/_/ /_/\__,_/  /_/  /_/\____/\__,_/_/ /_/\__/   
+/_____/_/_/ /_/\__,_/  /_/  /_/\____/\__,_/_/ /_/\__/      
                                      
 EOF
 }
@@ -44,35 +43,22 @@ function prompt_for_input {
   fi
 }
 
-# Use ACLs to grant access to the host directory for the container's high-mapped UID
-function set_permissions_via_acl {
-  # Get the high-mapped UID for the container (e.g., 100000, 101000, etc.)
-  HIGH_MAPPED_UID=$(( 100000 + ${CT_ID} ))
+# Set the container's high-mapped GID to match the containershare group
+function add_high_mapped_gid_to_group {
+  # Get the high-mapped GID for the container (e.g., 100000, 101000, etc.)
+  HIGH_MAPPED_GID=$(( 100000 + ${CT_ID} ))
   
-  # Apply ACL to grant the container's high-mapped UID access to the host directory
-  echo "Granting ACL permissions to UID ${HIGH_MAPPED_UID} for ${HOST_DIR}."
-  setfacl -m u:${HIGH_MAPPED_UID}:rwx ${HOST_DIR}
-  echo "ACL permissions set for container ${CT_ID} (UID ${HIGH_MAPPED_UID}) on ${HOST_DIR}."
-}
-
-# Check if setfacl is installed in the container, install it if missing
-function install_acl_if_missing {
-  if ! pct exec ${CT_ID} -- which setfacl &> /dev/null; then
-    echo "setfacl is not installed. Installing acl package inside the container..."
-    pct exec ${CT_ID} -- apt update
-    pct exec ${CT_ID} -- apt install -y acl
-    echo "ACL package installed."
+  # Ensure the containershare group exists on the host
+  if ! getent group containershare &> /dev/null; then
+    echo "Error: Group 'containershare' does not exist on the host. Exiting."
+    exit 1
   fi
-}
 
-# Use ACL to assign access to the directory for a non-root user (optional)
-function set_acl_permissions {
-  if [[ -n "${NON_ROOT_USER}" ]]; then
-    install_acl_if_missing
-    echo "Setting ACL permissions for ${NON_ROOT_USER} on ${CONTAINER_DIR}."
-    pct exec ${CT_ID} -- setfacl -m u:${NON_ROOT_USER}:rwx ${CONTAINER_DIR}
-    echo "ACL set successfully. User ${NON_ROOT_USER} now has access to ${CONTAINER_DIR}."
-  fi
+  # Change the GID of the host directory to match the containershare group for the container
+  echo "Adding high-mapped GID ${HIGH_MAPPED_GID} for container ${CT_ID} to the containershare group."
+  setfacl -m g:${HIGH_MAPPED_GID}:rwx ${HOST_DIR}
+
+  echo "Permissions updated for container ${CT_ID} with high-mapped GID ${HIGH_MAPPED_GID}."
 }
 
 # Update LXC configuration to bind the directory
@@ -104,8 +90,7 @@ function restart_container {
 
 header_info
 prompt_for_input
-set_permissions_via_acl
-set_acl_permissions
+add_high_mapped_gid_to_group
 update_lxc_config
 create_symlink
 restart_container
