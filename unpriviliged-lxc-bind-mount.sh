@@ -7,7 +7,7 @@ cat <<"EOF"
    / __ )(_)___  ____/ /  /  |/  /___  __  ______  / /_
   / __  / / __ \/ __  /  / /|_/ / __ \/ / / / __ \/ __/
  / /_/ / / / / / /_/ /  / /  / / /_/ / /_/ / / / / /_  
-/_____/_/_/ /_/\__,_/  /_/  /_/\____/\__,_/_/ /_/\__/    
+/_____/_/_/ /_/\__,_/  /_/  /_/\____/\__,_/_/ /_/\__/  
                                      
 EOF
 }
@@ -20,7 +20,7 @@ function prompt_for_input {
     exit 1
   fi
 
-  read -rp "Enter the full path of the host directory to bind mount (e.g., /tank/data): " HOST_DIR
+  read -rp "Enter the full path of the host directory to bind mount (e.g., /mnt/my-data-pool): " HOST_DIR
   if [[ ! -d "${HOST_DIR}" ]]; then
     read -rp "${HOST_DIR} does not exist. Create it? (y/n): " CONFIRM
     if [[ "${CONFIRM}" == "y" ]]; then
@@ -43,9 +43,9 @@ function prompt_for_input {
   fi
 }
 
-# Use ACLs to grant access to the host directory for the container's high-mapped UID
-function set_permissions_via_acl {
-  # Get the high-mapped UID for the container (e.g., 100000, 101000, etc.)
+# Apply ACL to grant container's high-mapped UID/GID access to the host directory
+function apply_acls {
+  # Calculate high-mapped UID/GID for the container (root UID is 0, high-mapped is 100000 + CT_ID)
   HIGH_MAPPED_UID=$(( 100000 + ${CT_ID} ))
   
   # Apply ACL to grant the container's high-mapped UID access to the host directory
@@ -54,58 +54,51 @@ function set_permissions_via_acl {
   echo "ACL permissions set for container ${CT_ID} (UID ${HIGH_MAPPED_UID}) on ${HOST_DIR}."
 }
 
-# Check if setfacl is installed in the container, install it if missing
-function install_acl_if_missing {
-  if ! pct exec ${CT_ID} -- which setfacl &> /dev/null; then
-    echo "setfacl is not installed. Installing acl package inside the container..."
-    pct exec ${CT_ID} -- apt update
-    pct exec ${CT_ID} -- apt install -y acl
-    echo "ACL package installed."
-  fi
-}
-
-# Use ACL to assign access to the directory for a non-root user (optional)
-function set_acl_permissions {
-  if [[ -n "${NON_ROOT_USER}" ]]; then
-    install_acl_if_missing
-    echo "Setting ACL permissions for ${NON_ROOT_USER} on ${CONTAINER_DIR}."
-    pct exec ${CT_ID} -- setfacl -m u:${NON_ROOT_USER}:rwx ${CONTAINER_DIR}
-    echo "ACL set successfully. User ${NON_ROOT_USER} now has access to ${CONTAINER_DIR}."
-  fi
-}
-
-# Update LXC configuration to bind the directory
+# Update LXC container configuration to bind the directory
 function update_lxc_config {
   echo "Adding bind mount point to the container configuration."
   echo "mp0: ${HOST_DIR},mp=${CONTAINER_DIR}" >> /etc/pve/lxc/${CT_ID}.conf
+  echo "Bind mount point added to /etc/pve/lxc/${CT_ID}.conf"
 }
 
-# Create symbolic link for easier access on host (optional)
-function create_symlink {
-  read -rp "Do you want to create a symbolic link for easy access to ${HOST_DIR}? (y/n): " CONFIRM_LINK
-  if [[ "${CONFIRM_LINK}" == "y" ]]; then
-    read -rp "Enter the path for the symbolic link (default: /mnt/container-${CT_ID}-data): " SYMLINK_PATH
-    SYMLINK_PATH=${SYMLINK_PATH:-/mnt/container-${CT_ID}-data}
-    ln -s ${HOST_DIR} ${SYMLINK_PATH}
-    echo "Created symbolic link at ${SYMLINK_PATH} pointing to ${HOST_DIR}."
+# Optionally create non-root user inside the container
+function create_non_root_user {
+  read -rp "Do you want to create a non-root user to access the mounted directory? (y/n): " CONFIRM_USER
+  if [[ "${CONFIRM_USER}" == "y" ]]; then
+    read -rp "Enter the username (default: binduser): " USERNAME
+    USERNAME=${USERNAME:-binduser}
+    pct exec ${CT_ID} -- useradd -u 1000 -m -s /usr/bin/bash ${USERNAME}
+    echo "Created non-root user ${USERNAME} with UID/GID 1000 in container ${CT_ID}."
   else
-    echo "Skipping symbolic link creation."
+    echo "Proceeding without creating a non-root user."
   fi
 }
 
-# Restart the container and verify setup
+# Optionally assign group to existing user
+function assign_user_to_group {
+  read -rp "Do you want to assign an existing user to the directory group? (y/n): " CONFIRM_GROUP
+  if [[ "${CONFIRM_GROUP}" == "y" ]]; then
+    read -rp "Enter the existing username (e.g., www-data): " EXISTING_USER
+    pct exec ${CT_ID} -- addgroup --gid 1000 host-data
+    pct exec ${CT_ID} -- usermod -aG host-data ${EXISTING_USER}
+    echo "Added ${EXISTING_USER} to group host-data in container ${CT_ID}."
+  else
+    echo "Proceeding without assigning a user to the group."
+  fi
+}
+
+# Restart the container to apply changes
 function restart_container {
   pct stop ${CT_ID}
   pct start ${CT_ID}
-  echo "Verifying the bind mount inside the container..."
-  pct exec ${CT_ID} -- ls -la ${CONTAINER_DIR}
+  echo "Container ${CT_ID} restarted and bind mount applied."
 }
 
 header_info
 prompt_for_input
-set_permissions_via_acl
-set_acl_permissions
+apply_acls
 update_lxc_config
-create_symlink
+create_non_root_user
+assign_user_to_group
 restart_container
 echo "Post-install script complete! Container ${CT_ID} is now configured."
