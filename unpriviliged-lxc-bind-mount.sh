@@ -3,10 +3,10 @@
 function header_info {
 clear
 cat <<"EOF"
-    ____  _           __   __  ___                  __ 
-   / __ )(_)___  ____/ /  /  |/  /___  __  ______  / /_
-  / __  / / __ \/ __  /  / /|_/ / __ \/ / / / __ \/ __/
- / /_/ / / / / / /_/ /  / /  / / /_/ / /_/ / / / / /_  
+   ____  _           __   __  ___                  __ 
+  / __ )(_)___  ____/ /  /  |/  /___  __  ______  / /_
+ / __  / / __ \/ __  /  / /|_/ / __ \/ / / / __ \/ __/
+/ /_/ / / / / / /_/ /  / /  / / /_/ / /_/ / / / / /_  
 /_____/_/_/ /_/\__,_/  /_/  /_/\____/\__,_/_/ /_/\__/      
                                      
 EOF
@@ -47,18 +47,22 @@ function prompt_for_input {
 function add_high_mapped_gid_to_group {
   # Get the high-mapped GID for the container (e.g., 100000, 101000, etc.)
   HIGH_MAPPED_GID=$(( 100000 + ${CT_ID} ))
-  
+
   # Ensure the containershare group exists on the host
   if ! getent group containershare &> /dev/null; then
     echo "Error: Group 'containershare' does not exist on the host. Exiting."
     exit 1
   fi
 
-  # Change the GID of the host directory to match the containershare group for the container
-  echo "Adding high-mapped GID ${HIGH_MAPPED_GID} for container ${CT_ID} to the containershare group."
-  setfacl -m g:${HIGH_MAPPED_GID}:rwx ${HOST_DIR}
+  # Apply group ownership on the container side (inside /Downloads)
+  echo "Setting GID ${HIGH_MAPPED_GID} inside container ${CT_ID} on ${CONTAINER_DIR}."
+  pct exec ${CT_ID} -- chown :containershare "${CONTAINER_DIR}" -R
+  pct exec ${CT_ID} -- chmod g+rwxs "${CONTAINER_DIR}"
 
-  echo "Permissions updated for container ${CT_ID} with high-mapped GID ${HIGH_MAPPED_GID}."
+  # Ensure all new files created inside the directory inherit the containershare GID
+  pct exec ${CT_ID} -- chmod g+s "${CONTAINER_DIR}"
+  
+  echo "Group ownership updated for container ${CT_ID} on ${CONTAINER_DIR}."
 }
 
 # Update LXC configuration to bind the directory
