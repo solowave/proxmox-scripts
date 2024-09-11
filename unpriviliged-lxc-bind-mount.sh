@@ -43,26 +43,29 @@ function prompt_for_input {
   fi
 }
 
+# Create the containershare group inside the container if it doesn't exist
+function ensure_group_exists_in_container {
+  # Check if the containershare group exists inside the container
+  if ! pct exec ${CT_ID} -- getent group containershare &>/dev/null; then
+    echo "Creating containershare group inside container ${CT_ID}."
+    pct exec ${CT_ID} -- groupadd containershare
+  fi
+}
+
 # Set the container's high-mapped GID to match the containershare group
 function add_high_mapped_gid_to_group {
   # Get the high-mapped GID for the container (e.g., 100000, 101000, etc.)
   HIGH_MAPPED_GID=$(( 100000 + ${CT_ID} ))
 
-  # Ensure the containershare group exists on the host
-  if ! getent group containershare &> /dev/null; then
-    echo "Error: Group 'containershare' does not exist on the host. Exiting."
-    exit 1
-  fi
+  # Ensure the containershare group exists inside the container
+  ensure_group_exists_in_container
 
   # Apply group ownership on the container side (inside /Downloads)
-  echo "Setting GID ${HIGH_MAPPED_GID} inside container ${CT_ID} on ${CONTAINER_DIR}."
+  echo "Setting GID ${HIGH_MAPPED_GID} for group containershare inside container ${CT_ID} on ${CONTAINER_DIR}."
   pct exec ${CT_ID} -- chown :containershare "${CONTAINER_DIR}" -R
   pct exec ${CT_ID} -- chmod g+rwxs "${CONTAINER_DIR}"
 
-  # Ensure all new files created inside the directory inherit the containershare GID
-  pct exec ${CT_ID} -- chmod g+s "${CONTAINER_DIR}"
-  
-  echo "Group ownership updated for container ${CT_ID} on ${CONTAINER_DIR}."
+  echo "Group ownership updated for container ${CT_ID} with high-mapped GID ${HIGH_MAPPED_GID} on ${CONTAINER_DIR}."
 }
 
 # Update LXC configuration to bind the directory
