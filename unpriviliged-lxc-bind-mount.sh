@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 
+# Function to display header
 function header_info {
 clear
 cat <<"EOF"
@@ -21,7 +22,7 @@ function prompt_for_input {
     exit 1
   fi
 
-  read -rp "Enter the full path of the host directory to bind mount (e.g., /mnt/my-data-pool): " HOST_DIR
+  read -rp "Enter the full path of the host directory to bind mount (e.g., /mnt/lxc_shares/my_data): " HOST_DIR
   if [[ ! -d "${HOST_DIR}" ]]; then
     read -rp "${HOST_DIR} does not exist. Create it? (y/n): " CONFIRM
     if [[ "${CONFIRM}" == "y" ]]; then
@@ -32,7 +33,7 @@ function prompt_for_input {
     fi
   fi
 
-  read -rp "Enter the full path inside the container for the mount (e.g., /mnt/host-data): " CONTAINER_DIR
+  read -rp "Enter the full path inside the container for the mount (e.g., /mnt/my_data): " CONTAINER_DIR
   if ! pct exec ${CT_ID} -- ls "${CONTAINER_DIR}" &>/dev/null; then
     read -rp "Directory ${CONTAINER_DIR} does not exist in container. Create it? (y/n): " CONFIRM
     if [[ "${CONFIRM}" == "y" ]]; then
@@ -42,73 +43,66 @@ function prompt_for_input {
       exit 1
     fi
   fi
-
-  read -rp "Enter the UID you want to map (e.g., 1005): " CUSTOM_UID
 }
 
-# Update the LXC config file to add custom UID/GID mapping
-function configure_uid_mapping {
-  CONFIG_FILE="/etc/pve/lxc/${CT_ID}.conf"
-
-  # Check if UID mapping already exists
-  if grep -q "lxc.idmap" "${CONFIG_FILE}"; then
-    echo "Custom UID mapping already exists for container ${CT_ID}. Exiting."
-    exit 1
+# Function to create the group if it doesn't exist in the container
+function create_group_in_container {
+  if pct exec ${CT_ID} -- getent group lxc_shares &>/dev/null; then
+    echo "Group 'lxc_shares' already exists in container ${CT_ID}."
+  else
+    echo "Creating group 'lxc_shares' with GID 10000 in container ${CT_ID}..."
+    pct exec ${CT_ID} -- groupadd -g 10000 lxc_shares
+    echo "Group 'lxc_shares' created."
   fi
+}
 
-  echo "Configuring UID/GID mapping for container ${CT_ID}..."
-
-  # Add custom UID/GID mapping to the LXC config
-  echo "lxc.idmap = u 0 100000 ${CUSTOM_UID}" >> ${CONFIG_FILE}
-  echo "lxc.idmap = g 0 100000 ${CUSTOM_UID}" >> ${CONFIG_FILE}
-  echo "lxc.idmap = u ${CUSTOM_UID} ${CUSTOM_UID} 1" >> ${CONFIG_FILE}
-  echo "lxc.idmap = g ${CUSTOM_UID} ${CUSTOM_UID} 1" >> ${CONFIG_FILE}
-  echo "lxc.idmap = u $((CUSTOM_UID + 1)) $((100000 + CUSTOM_UID + 1)) $((65535 - CUSTOM_UID))" >> ${CONFIG_FILE}
-  echo "lxc.idmap = g $((CUSTOM_UID + 1)) $((100000 + CUSTOM_UID + 1)) $((65535 - CUSTOM_UID))" >> ${CONFIG_FILE}
+# Function to add users to the lxc_shares group in the container
+function add_users_to_group {
+  read -rp "Enter the username(s) in the container you wish to add to the lxc_shares group (comma-separated, e.g., jellyfin,plex): " USERS
+  IFS=',' read -r -a USER_ARRAY <<< "$USERS"
   
-  echo "UID/GID mapping configured in ${CONFIG_FILE}."
+  for USER in "${USER_ARRAY[@]}"; do
+    echo "Adding ${USER} to the 'lxc_shares' group in container ${CT_ID}..."
+    pct exec ${CT_ID} -- usermod -aG lxc_shares ${USER}
+    echo "${USER} added to 'lxc_shares' group."
+  done
 }
 
-# Add entry to /etc/subuid and /etc/subgid
-function configure_subuid_subgid {
-  SUBUID_FILE="/etc/subuid"
-  SUBGID_FILE="/etc/subgid"
-
-  # Add entries for UID and GID in /etc/subuid and /etc/subgid
-  echo "root:${CUSTOM_UID}:1" >> ${SUBUID_FILE}
-  echo "root:${CUSTOM_UID}:1" >> ${SUBGID_FILE}
-
-  echo "Added custom UID/GID to ${SUBUID_FILE} and ${SUBGID_FILE}."
+# Function to set ownership and permissions on the host directory
+function set_host_directory_permissions {
+  echo "Setting ownership and permissions for the host directory ${HOST_DIR}..."
+  chown -R 100000:110000 ${HOST_DIR}
+  chmod 0770 ${HOST_DIR}
+  echo "Ownership set to UID 100000 and GID 110000, permissions set to 770."
 }
 
-# Apply ACL to grant container's high-mapped UID/GID access to the host directory
-function apply_acls {
-  # Apply ACL to grant the container's high-mapped UID access to the host directory
-  echo "Granting ACL permissions to UID ${CUSTOM_UID} for ${HOST_DIR}."
-  setfacl -m u:${CUSTOM_UID}:rwx ${HOST_DIR}
-  echo "ACL permissions set for UID ${CUSTOM_UID} on ${HOST_DIR}."
-}
-
-# Update LXC container configuration to bind the directory
+# Function to add the bind mount to the LXC configuration
 function update_lxc_config {
   CONFIG_FILE="/etc/pve/lxc/${CT_ID}.conf"
-  echo "Adding bind mount point to the container configuration."
-  echo "mp0: ${HOST_DIR},mp=${CONTAINER_DIR}" >> ${CONFIG_FILE}
-  echo "Bind mount point added to ${CONFIG_FILE}."
+
+  if grep -q "mp0:" "${CONFIG_FILE}"; then
+    echo "Bind mount already exists in the configuration for container ${CT_ID}. Exiting."
+    exit 1
+  else
+    echo "Adding bind mount point to the container configuration."
+    echo "mp0: ${HOST_DIR},mp=${CONTAINER_DIR}" >> ${CONFIG_FILE}
+    echo "Bind mount point added to ${CONFIG_FILE}."
+  fi
 }
 
-# Restart the container to apply changes
+# Function to restart the container
 function restart_container {
   pct stop ${CT_ID}
   pct start ${CT_ID}
-  echo "Container ${CT_ID} restarted and bind mount applied."
+  echo "Container ${CT_ID} restarted with bind mount applied."
 }
 
+# Main script execution
 header_info
 prompt_for_input
-configure_uid_mapping
-configure_subuid_subgid
-apply_acls
+create_group_in_container
+add_users_to_group
+set_host_directory_permissions
 update_lxc_config
 restart_container
-echo "Post-install script complete! Container ${CT_ID} is now configured."
+echo "Script complete! Container ${CT_ID} is now configured with the bind mount."
