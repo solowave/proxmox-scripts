@@ -3,11 +3,12 @@
 function header_info {
 clear
 cat <<"EOF"
-    ____  _           __   __  ___                  __ 
-   / __ )(_)___  ____/ /  /  |/  /___  __  ______  / /_
-  / __  / / __ \/ __  /  / /|_/ / __ \/ / / / __ \/ __/
- / /_/ / / / / / /_/ /  / /  / / /_/ / /_/ / / / / /_  
-/_____/_/_/ /_/\__,_/  /_/  /_/\____/\__,_/_/ /_/\__/   
+   _____                 __    _            
+  / ___/__  ______  _____/ /_  (_)___  ____ _
+  \__ \/ / / / __ \/ ___/ __ \/ / __ \/ __ `/
+ ___/ / /_/ / / / / /__/ / / / / / / / /_/ / 
+/____/\__, /_/ /_/\___/_/ /_/_/_/ /_/\__, /  
+     /____/                          /____/   
                                      
 EOF
 }
@@ -80,11 +81,12 @@ function configure_subuid_subgid {
   echo "Added custom UID/GID to ${SUBUID_FILE} and ${SUBGID_FILE}."
 }
 
-# Change ownership of the host directory
-function change_ownership {
-  echo "Changing ownership of ${HOST_DIR} to UID/GID ${CUSTOM_UID}:${CUSTOM_UID} on the host..."
-  chown -R ${CUSTOM_UID}:${CUSTOM_UID} ${HOST_DIR}
-  echo "Ownership of ${HOST_DIR} changed to ${CUSTOM_UID}:${CUSTOM_UID}."
+# Apply ACL to grant container's high-mapped UID/GID access to the host directory
+function apply_acls {
+  # Apply ACL to grant the container's high-mapped UID access to the host directory
+  echo "Granting ACL permissions to UID ${CUSTOM_UID} for ${HOST_DIR}."
+  setfacl -m u:${CUSTOM_UID}:rwx ${HOST_DIR}
+  echo "ACL permissions set for UID ${CUSTOM_UID} on ${HOST_DIR}."
 }
 
 # Update LXC container configuration to bind the directory
@@ -106,7 +108,7 @@ header_info
 prompt_for_input
 configure_uid_mapping
 configure_subuid_subgid
-change_ownership
+apply_acls
 update_lxc_config
 restart_container
 echo "Post-install script complete! Container ${CT_ID} is now configured."
