@@ -7,7 +7,7 @@ cat <<"EOF"
    / __ )(_)___  ____/ /  /  |/  /___  __  ______  / /_
   / __  / / __ \/ __  /  / /|_/ / __ \/ / / / __ \/ __/
  / /_/ / / / / / /_/ /  / /  / / /_/ / /_/ / / / / /_  
-/_____/_/_/ /_/\__,_/  /_/  /_/\____/\__,_/_/ /_/\__/  
+/_____/_/_/ /_/\__,_/  /_/  /_/\____/\__,_/_/ /_/\__/   
                                      
 EOF
 }
@@ -41,50 +41,58 @@ function prompt_for_input {
       exit 1
     fi
   fi
+
+  read -rp "Enter the UID you want to map (e.g., 1005): " CUSTOM_UID
 }
 
-# Apply ACL to grant container's high-mapped UID/GID access to the host directory
-function apply_acls {
-  # Calculate high-mapped UID/GID for the container (root UID is 0, high-mapped is 100000 + CT_ID)
-  HIGH_MAPPED_UID=$(( 100000 + ${CT_ID} ))
+# Update the LXC config file to add custom UID/GID mapping
+function configure_uid_mapping {
+  CONFIG_FILE="/etc/pve/lxc/${CT_ID}.conf"
+
+  # Check if UID mapping already exists
+  if grep -q "lxc.idmap" "${CONFIG_FILE}"; then
+    echo "Custom UID mapping already exists for container ${CT_ID}. Exiting."
+    exit 1
+  fi
+
+  echo "Configuring UID/GID mapping for container ${CT_ID}..."
+
+  # Add custom UID/GID mapping to the LXC config
+  echo "lxc.idmap = u 0 100000 ${CUSTOM_UID}" >> ${CONFIG_FILE}
+  echo "lxc.idmap = g 0 100000 ${CUSTOM_UID}" >> ${CONFIG_FILE}
+  echo "lxc.idmap = u ${CUSTOM_UID} ${CUSTOM_UID} 1" >> ${CONFIG_FILE}
+  echo "lxc.idmap = g ${CUSTOM_UID} ${CUSTOM_UID} 1" >> ${CONFIG_FILE}
+  echo "lxc.idmap = u $((CUSTOM_UID + 1)) $((100000 + CUSTOM_UID + 1)) $((65535 - CUSTOM_UID))" >> ${CONFIG_FILE}
+  echo "lxc.idmap = g $((CUSTOM_UID + 1)) $((100000 + CUSTOM_UID + 1)) $((65535 - CUSTOM_UID))" >> ${CONFIG_FILE}
   
-  # Apply ACL to grant the container's high-mapped UID access to the host directory
-  echo "Granting ACL permissions to UID ${HIGH_MAPPED_UID} for ${HOST_DIR}."
-  setfacl -m u:${HIGH_MAPPED_UID}:rwx ${HOST_DIR}
-  echo "ACL permissions set for container ${CT_ID} (UID ${HIGH_MAPPED_UID}) on ${HOST_DIR}."
+  echo "UID/GID mapping configured in ${CONFIG_FILE}."
+}
+
+# Add entry to /etc/subuid and /etc/subgid
+function configure_subuid_subgid {
+  SUBUID_FILE="/etc/subuid"
+  SUBGID_FILE="/etc/subgid"
+
+  # Add entries for UID and GID in /etc/subuid and /etc/subgid
+  echo "root:${CUSTOM_UID}:1" >> ${SUBUID_FILE}
+  echo "root:${CUSTOM_UID}:1" >> ${SUBGID_FILE}
+
+  echo "Added custom UID/GID to ${SUBUID_FILE} and ${SUBGID_FILE}."
+}
+
+# Change ownership of the host directory
+function change_ownership {
+  echo "Changing ownership of ${HOST_DIR} to UID/GID ${CUSTOM_UID}:${CUSTOM_UID} on the host..."
+  chown -R ${CUSTOM_UID}:${CUSTOM_UID} ${HOST_DIR}
+  echo "Ownership of ${HOST_DIR} changed to ${CUSTOM_UID}:${CUSTOM_UID}."
 }
 
 # Update LXC container configuration to bind the directory
 function update_lxc_config {
+  CONFIG_FILE="/etc/pve/lxc/${CT_ID}.conf"
   echo "Adding bind mount point to the container configuration."
-  echo "mp0: ${HOST_DIR},mp=${CONTAINER_DIR}" >> /etc/pve/lxc/${CT_ID}.conf
-  echo "Bind mount point added to /etc/pve/lxc/${CT_ID}.conf"
-}
-
-# Optionally create non-root user inside the container
-function create_non_root_user {
-  read -rp "Do you want to create a non-root user to access the mounted directory? (y/n): " CONFIRM_USER
-  if [[ "${CONFIRM_USER}" == "y" ]]; then
-    read -rp "Enter the username (default: binduser): " USERNAME
-    USERNAME=${USERNAME:-binduser}
-    pct exec ${CT_ID} -- useradd -u 1000 -m -s /usr/bin/bash ${USERNAME}
-    echo "Created non-root user ${USERNAME} with UID/GID 1000 in container ${CT_ID}."
-  else
-    echo "Proceeding without creating a non-root user."
-  fi
-}
-
-# Optionally assign group to existing user
-function assign_user_to_group {
-  read -rp "Do you want to assign an existing user to the directory group? (y/n): " CONFIRM_GROUP
-  if [[ "${CONFIRM_GROUP}" == "y" ]]; then
-    read -rp "Enter the existing username (e.g., www-data): " EXISTING_USER
-    pct exec ${CT_ID} -- addgroup --gid 1000 host-data
-    pct exec ${CT_ID} -- usermod -aG host-data ${EXISTING_USER}
-    echo "Added ${EXISTING_USER} to group host-data in container ${CT_ID}."
-  else
-    echo "Proceeding without assigning a user to the group."
-  fi
+  echo "mp0: ${HOST_DIR},mp=${CONTAINER_DIR}" >> ${CONFIG_FILE}
+  echo "Bind mount point added to ${CONFIG_FILE}."
 }
 
 # Restart the container to apply changes
@@ -96,9 +104,9 @@ function restart_container {
 
 header_info
 prompt_for_input
-apply_acls
+configure_uid_mapping
+configure_subuid_subgid
+change_ownership
 update_lxc_config
-create_non_root_user
-assign_user_to_group
 restart_container
 echo "Post-install script complete! Container ${CT_ID} is now configured."
