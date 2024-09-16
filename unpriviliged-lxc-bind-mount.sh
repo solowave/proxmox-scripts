@@ -65,55 +65,43 @@ function get_container_id {
   done
 }
 
-# Function to get host directory and check if it exists
+# Function to get the base host directory and allow user to select a subdirectory
 function get_host_directory {
   while true; do
-    HOST_DIR=$(whiptail --inputbox "Enter the full path of the host directory to bind mount (or type 'exit' to quit):" 8 78 "${EXISTING_HOST_DIR}" 3>&1 1>&2 2>&3)
-
+    BASE_HOST_DIR=$(whiptail --inputbox "Enter the base path of the host directory to bind mount (or type 'exit' to quit):" 8 78 "/tank/data" 3>&1 1>&2 2>&3)
+    
     # Exit option
-    if [[ "${HOST_DIR}" == "exit" ]]; then
+    if [[ "${BASE_HOST_DIR}" == "exit" ]]; then
       whiptail --msgbox "Exiting script..." 8 78
       exit 1
     fi
 
-    if [[ -d "${HOST_DIR}" ]]; then
-      break  # valid directory, move on
+    if [[ -d "${BASE_HOST_DIR}" ]]; then
+      break  # valid base directory, move on
     else
-      if (whiptail --yesno "${HOST_DIR} does not exist. Create it?" 8 78); then
-        mkdir -p "${HOST_DIR}"
-        break  # directory created, move on
-      else
-        # Loop back to the directory prompt
-        whiptail --msgbox "Host directory is required. Let's try again." 8 78
-      fi
+      whiptail --msgbox "Base directory does not exist. Let's try again." 8 78
     fi
   done
+
+  # Get list of directories and allow user to select one
+  HOST_DIR=$(whiptail --menu "Select a host directory from ${BASE_HOST_DIR}:" 20 78 10 $(find "${BASE_HOST_DIR}" -maxdepth 1 -type d -printf "%f\n" | awk '{print NR,$1}' ORS=' ') 3>&1 1>&2 2>&3)
+  
+  # Construct the full path of the selected directory
+  HOST_DIR="${BASE_HOST_DIR}/${HOST_DIR}"
 }
 
-# Function to get container directory and check if it exists (removes leading slash if entered)
+# Function to list container directories and allow user to select one
 function get_container_directory {
   while true; do
-    CONTAINER_DIR=$(whiptail --inputbox "Enter the full path inside the container for the mount (do not use a leading slash, or type 'exit' to quit):" 8 78 "${EXISTING_CONTAINER_DIR}" 3>&1 1>&2 2>&3)
-
-    # Exit option
-    if [[ "${CONTAINER_DIR}" == "exit" ]]; then
-      whiptail --msgbox "Exiting script..." 8 78
-      exit 1
-    fi
-
+    CONTAINER_DIR=$(whiptail --menu "Select a container directory to mount (do not use a leading slash):" 20 78 10 $(pct exec ${CT_ID} -- find / -maxdepth 2 -type d | awk '{print NR,$1}' ORS=' ') 3>&1 1>&2 2>&3)
+    
     # Remove leading slash if present
     CONTAINER_DIR="${CONTAINER_DIR#/}"
-
+    
     if pct exec ${CT_ID} -- ls "${CONTAINER_DIR}" &>/dev/null; then
       break  # valid container directory, move on
     else
-      if (whiptail --yesno "Directory ${CONTAINER_DIR} does not exist in container. Create it?" 8 78); then
-        pct exec ${CT_ID} -- mkdir -p "${CONTAINER_DIR}"
-        break  # directory created, move on
-      else
-        # Loop back to the container directory prompt
-        whiptail --msgbox "Container directory is required. Let's try again." 8 78
-      fi
+      whiptail --msgbox "Container directory is required. Let's try again." 8 78
     fi
   done
 }
@@ -208,8 +196,8 @@ header_info
 show_welcome
 get_container_id  # Loop back to container ID step if invalid
 check_existing_mount
-get_host_directory  # Loop back to host directory step if invalid
-get_container_directory  # Automatically removes leading slash; loops back if invalid
+get_host_directory  # Interactive host directory selection
+get_container_directory  # Interactive container directory selection
 create_group_in_container
 add_users_to_group  # Loop back to username step if invalid; creates missing users
 set_host_directory_permissions
