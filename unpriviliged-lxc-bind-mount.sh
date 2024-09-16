@@ -39,45 +39,55 @@ function check_existing_mount {
   fi
 }
 
-# Prompt for container details and paths using whiptail
-function prompt_for_input {
-  # Get the container ID
-  CT_ID=$(whiptail --inputbox "Enter the ID of the LXC container you wish to bind the mount point to:" 8 39 --title "Container ID" 3>&1 1>&2 2>&3)
-
-  # Validate if the container exists
-  if [[ ! -f /etc/pve/lxc/${CT_ID}.conf ]]; then
-    whiptail --msgbox "Container with ID ${CT_ID} does not exist. Please try again." 8 78
-    exit 1
-  fi
-
-  # Check if a mount point already exists and pre-fill paths
-  check_existing_mount
-
-  # Prefill with existing or default host path
-  HOST_DIR=$(whiptail --inputbox "Enter the full path of the host directory to bind mount:" 8 78 "${EXISTING_HOST_DIR}" 3>&1 1>&2 2>&3)
-
-  # Check if the directory exists
-  if [[ ! -d "${HOST_DIR}" ]]; then
-    if (whiptail --yesno "${HOST_DIR} does not exist. Create it?" 8 78); then
-      mkdir -p "${HOST_DIR}"
+# Function to get container ID and validate it
+function get_container_id {
+  while true; do
+    CT_ID=$(whiptail --inputbox "Enter the ID of the LXC container you wish to bind the mount point to:" 8 39 --title "Container ID" 3>&1 1>&2 2>&3)
+    
+    if [[ -f /etc/pve/lxc/${CT_ID}.conf ]]; then
+      break  # valid container ID, move on
     else
-      whiptail --msgbox "Host directory does not exist. Exiting." 8 78
-      exit 1
+      whiptail --msgbox "Container with ID ${CT_ID} does not exist. Please try again." 8 78
     fi
-  fi
+  done
+}
 
-  # Prefill with existing or default container path
-  CONTAINER_DIR=$(whiptail --inputbox "Enter the full path inside the container for the mount:" 8 78 "${EXISTING_CONTAINER_DIR}" 3>&1 1>&2 2>&3)
+# Function to get host directory and check if it exists
+function get_host_directory {
+  while true; do
+    HOST_DIR=$(whiptail --inputbox "Enter the full path of the host directory to bind mount:" 8 78 "${EXISTING_HOST_DIR}" 3>&1 1>&2 2>&3)
 
-  # Check if directory exists in the container
-  if ! pct exec ${CT_ID} -- ls "${CONTAINER_DIR}" &>/dev/null; then
-    if (whiptail --yesno "Directory ${CONTAINER_DIR} does not exist in container. Create it?" 8 78); then
-      pct exec ${CT_ID} -- mkdir -p "${CONTAINER_DIR}"
+    if [[ -d "${HOST_DIR}" ]]; then
+      break  # valid directory, move on
     else
-      whiptail --msgbox "Exiting." 8 78
-      exit 1
+      if (whiptail --yesno "${HOST_DIR} does not exist. Create it?" 8 78); then
+        mkdir -p "${HOST_DIR}"
+        break  # directory created, move on
+      else
+        # Loop back to the directory prompt
+        whiptail --msgbox "Host directory is required. Let's try again." 8 78
+      fi
     fi
-  fi
+  done
+}
+
+# Function to get container directory and check if it exists
+function get_container_directory {
+  while true; do
+    CONTAINER_DIR=$(whiptail --inputbox "Enter the full path inside the container for the mount:" 8 78 "${EXISTING_CONTAINER_DIR}" 3>&1 1>&2 2>&3)
+
+    if pct exec ${CT_ID} -- ls "${CONTAINER_DIR}" &>/dev/null; then
+      break  # valid container directory, move on
+    else
+      if (whiptail --yesno "Directory ${CONTAINER_DIR} does not exist in container. Create it?" 8 78); then
+        pct exec ${CT_ID} -- mkdir -p "${CONTAINER_DIR}"
+        break  # directory created, move on
+      else
+        # Loop back to the container directory prompt
+        whiptail --msgbox "Container directory is required. Let's try again." 8 78
+      fi
+    fi
+  done
 }
 
 # Create the group if it doesn't exist in the container
@@ -94,12 +104,21 @@ function create_group_in_container {
 function add_users_to_group {
   # Prefill the username with the container's hostname
   CONTAINER_HOSTNAME=$(pct exec ${CT_ID} -- hostname)
-  USERS=$(whiptail --inputbox "Enter the username(s) in the container you wish to add to the lxc_shares group (comma-separated, pre-filled with container hostname):" 8 78 "${CONTAINER_HOSTNAME}" 3>&1 1>&2 2>&3)
   
-  IFS=',' read -r -a USER_ARRAY <<< "$USERS"
-  for USER in "${USER_ARRAY[@]}"; do
-    pct exec ${CT_ID} -- usermod -aG lxc_shares ${USER}
-    whiptail --msgbox "${USER} added to 'lxc_shares' group in container ${CT_ID}." 8 78
+  while true; do
+    USERS=$(whiptail --inputbox "Enter the username(s) in the container you wish to add to the lxc_shares group (comma-separated, pre-filled with container hostname):" 8 78 "${CONTAINER_HOSTNAME}" 3>&1 1>&2 2>&3)
+    
+    IFS=',' read -r -a USER_ARRAY <<< "$USERS"
+    for USER in "${USER_ARRAY[@]}"; do
+      if pct exec ${CT_ID} -- id -u "${USER}" &>/dev/null; then
+        pct exec ${CT_ID} -- usermod -aG lxc_shares "${USER}"
+        whiptail --msgbox "${USER} added to 'lxc_shares' group in container ${CT_ID}." 8 78
+      else
+        whiptail --msgbox "User ${USER} does not exist in container ${CT_ID}. Please try again." 8 78
+        break 2  # Break out of both loops and prompt the user again
+      fi
+    done
+    break  # All users valid, move on
   done
 }
 
@@ -132,9 +151,12 @@ function restart_container {
 # Main script execution
 header_info
 show_welcome
-prompt_for_input
+get_container_id  # Loop back to container ID step if invalid
+check_existing_mount
+get_host_directory  # Loop back to host directory step if invalid
+get_container_directory  # Loop back to container directory step if invalid
 create_group_in_container
-add_users_to_group
+add_users_to_group  # Loop back to username step if invalid
 set_host_directory_permissions
 update_lxc_config
 restart_container
