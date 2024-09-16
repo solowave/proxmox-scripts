@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 
+# Trap Ctrl+C and exit gracefully
+trap ctrl_c INT
+function ctrl_c() {
+    whiptail --msgbox "Script interrupted. Exiting now!" 8 78
+    exit 1
+}
+
 # Display a header using ASCII art
 function header_info {
 clear
@@ -35,15 +42,21 @@ function check_existing_mount {
   else
     # Default paths if no mount point is found
     EXISTING_HOST_DIR="/tank/data"
-    EXISTING_CONTAINER_DIR="/mnt/my_data"
+    EXISTING_CONTAINER_DIR="mnt/my_data"  # No leading slash for container
   fi
 }
 
 # Function to get container ID and validate it
 function get_container_id {
   while true; do
-    CT_ID=$(whiptail --inputbox "Enter the ID of the LXC container you wish to bind the mount point to:" 8 39 --title "Container ID" 3>&1 1>&2 2>&3)
+    CT_ID=$(whiptail --inputbox "Enter the ID of the LXC container you wish to bind the mount point to (or type 'exit' to quit):" 8 39 --title "Container ID" 3>&1 1>&2 2>&3)
     
+    # Exit option
+    if [[ "${CT_ID}" == "exit" ]]; then
+      whiptail --msgbox "Exiting script..." 8 78
+      exit 1
+    fi
+
     if [[ -f /etc/pve/lxc/${CT_ID}.conf ]]; then
       break  # valid container ID, move on
     else
@@ -55,7 +68,13 @@ function get_container_id {
 # Function to get host directory and check if it exists
 function get_host_directory {
   while true; do
-    HOST_DIR=$(whiptail --inputbox "Enter the full path of the host directory to bind mount:" 8 78 "${EXISTING_HOST_DIR}" 3>&1 1>&2 2>&3)
+    HOST_DIR=$(whiptail --inputbox "Enter the full path of the host directory to bind mount (or type 'exit' to quit):" 8 78 "${EXISTING_HOST_DIR}" 3>&1 1>&2 2>&3)
+
+    # Exit option
+    if [[ "${HOST_DIR}" == "exit" ]]; then
+      whiptail --msgbox "Exiting script..." 8 78
+      exit 1
+    fi
 
     if [[ -d "${HOST_DIR}" ]]; then
       break  # valid directory, move on
@@ -71,10 +90,19 @@ function get_host_directory {
   done
 }
 
-# Function to get container directory and check if it exists
+# Function to get container directory and check if it exists (removes leading slash if entered)
 function get_container_directory {
   while true; do
-    CONTAINER_DIR=$(whiptail --inputbox "Enter the full path inside the container for the mount:" 8 78 "${EXISTING_CONTAINER_DIR}" 3>&1 1>&2 2>&3)
+    CONTAINER_DIR=$(whiptail --inputbox "Enter the full path inside the container for the mount (do not use a leading slash, or type 'exit' to quit):" 8 78 "${EXISTING_CONTAINER_DIR}" 3>&1 1>&2 2>&3)
+
+    # Exit option
+    if [[ "${CONTAINER_DIR}" == "exit" ]]; then
+      whiptail --msgbox "Exiting script..." 8 78
+      exit 1
+    fi
+
+    # Remove leading slash if present
+    CONTAINER_DIR="${CONTAINER_DIR#/}"
 
     if pct exec ${CT_ID} -- ls "${CONTAINER_DIR}" &>/dev/null; then
       break  # valid container directory, move on
@@ -106,8 +134,14 @@ function add_users_to_group {
   CONTAINER_HOSTNAME=$(pct exec ${CT_ID} -- hostname)
   
   while true; do
-    USERS=$(whiptail --inputbox "Enter the username(s) in the container you wish to add to the lxc_shares group (comma-separated, pre-filled with container hostname):" 8 78 "${CONTAINER_HOSTNAME}" 3>&1 1>&2 2>&3)
-    
+    USERS=$(whiptail --inputbox "Enter the username(s) in the container you wish to add to the lxc_shares group (comma-separated, pre-filled with container hostname or type 'exit' to quit):" 8 78 "${CONTAINER_HOSTNAME}" 3>&1 1>&2 2>&3)
+
+    # Exit option
+    if [[ "${USERS}" == "exit" ]]; then
+      whiptail --msgbox "Exiting script..." 8 78
+      exit 1
+    fi
+
     IFS=',' read -r -a USER_ARRAY <<< "$USERS"
     for USER in "${USER_ARRAY[@]}"; do
       if pct exec ${CT_ID} -- id -u "${USER}" &>/dev/null; then
@@ -154,7 +188,7 @@ show_welcome
 get_container_id  # Loop back to container ID step if invalid
 check_existing_mount
 get_host_directory  # Loop back to host directory step if invalid
-get_container_directory  # Loop back to container directory step if invalid
+get_container_directory  # Automatically removes leading slash; loops back if invalid
 create_group_in_container
 add_users_to_group  # Loop back to username step if invalid
 set_host_directory_permissions
