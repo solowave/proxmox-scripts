@@ -128,7 +128,7 @@ function create_group_in_container {
   fi
 }
 
-# Add users to the lxc_shares group in the container
+# Add or create users in the lxc_shares group in the container
 function add_users_to_group {
   # Prefill the username with the container's hostname
   CONTAINER_HOSTNAME=$(pct exec ${CT_ID} -- hostname)
@@ -148,8 +148,16 @@ function add_users_to_group {
         pct exec ${CT_ID} -- usermod -aG lxc_shares "${USER}"
         whiptail --msgbox "${USER} added to 'lxc_shares' group in container ${CT_ID}." 8 78
       else
-        whiptail --msgbox "User ${USER} does not exist in container ${CT_ID}. Please try again." 8 78
-        break 2  # Break out of both loops and prompt the user again
+        # Ask if the user should be created
+        if (whiptail --yesno "User ${USER} does not exist in container ${CT_ID}. Create user?" 8 78); then
+          # Create the user with a home directory and default shell
+          pct exec ${CT_ID} -- useradd -m -s /bin/bash "${USER}"
+          pct exec ${CT_ID} -- usermod -aG lxc_shares "${USER}"
+          whiptail --msgbox "User ${USER} created and added to 'lxc_shares' group in container ${CT_ID}." 8 78
+        else
+          # Skip user creation
+          whiptail --msgbox "User ${USER} was not created. Let's try again." 8 78
+        fi
       fi
     done
     break  # All users valid, move on
@@ -203,7 +211,7 @@ check_existing_mount
 get_host_directory  # Loop back to host directory step if invalid
 get_container_directory  # Automatically removes leading slash; loops back if invalid
 create_group_in_container
-add_users_to_group  # Loop back to username step if invalid
+add_users_to_group  # Loop back to username step if invalid; creates missing users
 set_host_directory_permissions
 update_lxc_config
 restart_container
