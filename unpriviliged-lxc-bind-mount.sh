@@ -32,9 +32,8 @@ function check_existing_mount {
     # Extract existing mp0 paths for host and container
     EXISTING_HOST_DIR=$(grep "mp0:" "${CONFIG_FILE}" | cut -d ',' -f 1 | cut -d ':' -f 2)
     EXISTING_CONTAINER_DIR=$(grep "mp0:" "${CONFIG_FILE}" | cut -d ',' -f 2 | cut -d '=' -f 2)
-    # Replace mp0 with lxc.mount.entry
+    # Remove mp0 as we will replace it with lxc.mount.entry
     sed -i "/mp0:/d" "${CONFIG_FILE}"
-    echo "Found mp0 mount. Replacing with lxc.mount.entry."
   elif grep -q "lxc.mount.entry:" "${CONFIG_FILE}"; then
     # Extract existing lxc.mount.entry paths
     EXISTING_HOST_DIR=$(grep "lxc.mount.entry:" "${CONFIG_FILE}" | cut -d ' ' -f 2)
@@ -65,9 +64,9 @@ function get_container_id {
   done
 }
 
-# Function to manually input host directory
+# Function to manually input host directory with pre-filled value if available
 function get_host_directory {
-  HOST_DIR=$(whiptail --inputbox "Enter the full path of the host directory to bind mount (default: /tank/data):" 8 78 "/tank/data" 3>&1 1>&2 2>&3)
+  HOST_DIR=$(whiptail --inputbox "Enter the full path of the host directory to bind mount (default: /tank/data):" 8 78 "${EXISTING_HOST_DIR}" 3>&1 1>&2 2>&3)
   
   if [[ -z "$HOST_DIR" ]]; then
     whiptail --msgbox "No directory selected. Exiting..." 8 40
@@ -75,9 +74,9 @@ function get_host_directory {
   fi
 }
 
-# Function to manually input container directory
+# Function to manually input container directory with pre-filled value if available
 function get_container_directory {
-  CONTAINER_DIR=$(whiptail --inputbox "Enter the full path inside the container for the mount (e.g., /mnt/host-data):" 8 78 "mnt/my_data" 3>&1 1>&2 2>&3)
+  CONTAINER_DIR=$(whiptail --inputbox "Enter the full path inside the container for the mount (e.g., /mnt/host-data):" 8 78 "${EXISTING_CONTAINER_DIR}" 3>&1 1>&2 2>&3)
 
   # If the user cancels or no valid selection is made
   if [[ -z "$CONTAINER_DIR" ]]; then
@@ -175,9 +174,9 @@ function restart_container {
 header_info
 show_welcome
 get_container_id  # Loop back to container ID step if invalid
-check_existing_mount
-get_host_directory  # Manual host directory input
-get_container_directory  # Manual container directory input
+check_existing_mount  # Check if there are existing mounts and prefill paths
+get_host_directory  # Manual host directory input with prefilled paths
+get_container_directory  # Manual container directory input with prefilled paths
 create_group_in_container
 add_users_to_group  # Loop back to username step if invalid; creates missing users
 set_host_directory_permissions
