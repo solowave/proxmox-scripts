@@ -25,40 +25,49 @@ function show_welcome {
   whiptail --title "LXC Setup Script" --msgbox "Welcome to the LXC Bind Mount Setup Script!" 8 60
 }
 
-# Function to simulate file browsing using whiptail
-function browse_directory {
-  local CURRENT_DIR="$1"
-  local SELECTION
-  
-  while true; do
-    # List files and directories, include ../ to go up one directory
-    ITEMS=$(find "$CURRENT_DIR" -maxdepth 1 -type d -printf "%f/ " -o -type f -printf "%f " | xargs -n 1)
-    SELECTION=$(whiptail --title "File Browser" --menu "Browsing $CURRENT_DIR" 20 78 10 ../ $ITEMS 3>&1 1>&2 2>&3)
+# Function to check if a mount point exists in the config file and pre-fill the paths
+function check_existing_mount {
+  CONFIG_FILE="/etc/pve/lxc/${CT_ID}.conf"
+  if grep -q "mp0:" "${CONFIG_FILE}"; then
+    # Extract existing mp0 paths for host and container
+    EXISTING_HOST_DIR=$(grep "mp0:" "${CONFIG_FILE}" | cut -d ',' -f 1 | cut -d ':' -f 2)
+    EXISTING_CONTAINER_DIR=$(grep "mp0:" "${CONFIG_FILE}" | cut -d ',' -f 2 | cut -d '=' -f 2)
+    # Replace mp0 with lxc.mount.entry
+    sed -i "/mp0:/d" "${CONFIG_FILE}"
+    echo "Found mp0 mount. Replacing with lxc.mount.entry."
+  elif grep -q "lxc.mount.entry:" "${CONFIG_FILE}"; then
+    # Extract existing lxc.mount.entry paths
+    EXISTING_HOST_DIR=$(grep "lxc.mount.entry:" "${CONFIG_FILE}" | cut -d ' ' -f 2)
+    EXISTING_CONTAINER_DIR=$(grep "lxc.mount.entry:" "${CONFIG_FILE}" | cut -d ' ' -f 3)
+  else
+    # Default paths if no mount point is found
+    EXISTING_HOST_DIR="/tank/data"
+    EXISTING_CONTAINER_DIR="mnt/my_data"  # No leading slash for container
+  fi
+}
 
-    # If user cancels
-    if [ $? -ne 0 ]; then
-      return 1
+# Function to get container ID and validate it
+function get_container_id {
+  while true; do
+    CT_ID=$(whiptail --inputbox "Enter the ID of the LXC container you wish to bind the mount point to (or type 'exit' to quit):" 8 60 3>&1 1>&2 2>&3)
+    
+    # Exit option
+    if [[ "${CT_ID}" == "exit" ]]; then
+      whiptail --msgbox "Exiting script..." 8 40
+      exit 1
     fi
 
-    # If the user chooses to go up a directory
-    if [[ "$SELECTION" == "../" ]]; then
-      CURRENT_DIR=$(dirname "$CURRENT_DIR")
-    elif [[ -d "$CURRENT_DIR/$SELECTION" ]]; then
-      # If it's a directory, navigate into it
-      CURRENT_DIR="$CURRENT_DIR/$SELECTION"
+    if [[ -f /etc/pve/lxc/${CT_ID}.conf ]]; then
+      break  # valid container ID, move on
     else
-      # It's a file, so return the selection
-      echo "$CURRENT_DIR/$SELECTION"
-      return 0
+      whiptail --msgbox "Container with ID ${CT_ID} does not exist. Please try again." 8 60
     fi
   done
 }
 
-# Function to get host directory interactively
+# Function to manually input host directory
 function get_host_directory {
-  local BASE_DIR="/tank/data"
-  
-  HOST_DIR=$(browse_directory "$BASE_DIR")
+  HOST_DIR=$(whiptail --inputbox "Enter the full path of the host directory to bind mount (default: /tank/data):" 8 78 "/tank/data" 3>&1 1>&2 2>&3)
   
   if [[ -z "$HOST_DIR" ]]; then
     whiptail --msgbox "No directory selected. Exiting..." 8 40
@@ -66,11 +75,10 @@ function get_host_directory {
   fi
 }
 
-# Function to select container directory interactively
+# Function to manually input container directory
 function get_container_directory {
-  # Browse directories inside the container
-  CONTAINER_DIR=$(pct exec ${CT_ID} -- find / -maxdepth 1 -type d | whiptail --menu "Select a container directory" 20 60 10 3>&1 1>&2 2>&3)
-  
+  CONTAINER_DIR=$(whiptail --inputbox "Enter the full path inside the container for the mount (e.g., /mnt/host-data):" 8 78 "mnt/my_data" 3>&1 1>&2 2>&3)
+
   # If the user cancels or no valid selection is made
   if [[ -z "$CONTAINER_DIR" ]]; then
     whiptail --msgbox "No directory selected. Exiting..." 8 40
@@ -78,8 +86,101 @@ function get_container_directory {
   fi
 }
 
+# Function to create the group if it doesn't exist in the container
+function create_group_in_container {
+  if pct exec ${CT_ID} -- getent group lxc_shares &>/dev/null; then
+    whiptail --msgbox "Group 'lxc_shares' already exists in container ${CT_ID}." 8 40
+  else
+    pct exec ${CT_ID} -- groupadd -g 10000 lxc_shares
+    whiptail --msgbox "Group 'lxc_shares' created in container ${CT_ID}." 8 40
+  fi
+}
+
+# Add or create users in the lxc_shares group in the container
+function add_users_to_group {
+  # Prefill the username with the container's hostname
+  CONTAINER_HOSTNAME=$(pct exec ${CT_ID} -- hostname)
+  
+  while true; do
+    USERS=$(whiptail --inputbox "Enter the username(s) in the container you wish to add to the lxc_shares group (comma-separated, pre-filled with container hostname or type 'exit' to quit):" 8 60 "${CONTAINER_HOSTNAME}" 3>&1 1>&2 2>&3)
+
+    # Exit option
+    if [[ "${USERS}" == "exit" ]]; then
+      whiptail --msgbox "Exiting script..." 8 40
+      exit 1
+    fi
+
+    IFS=',' read -r -a USER_ARRAY <<< "$USERS"
+    for USER in "${USER_ARRAY[@]}"; do
+      if pct exec ${CT_ID} -- id -u "${USER}" &>/dev/null; then
+        pct exec ${CT_ID} -- usermod -aG lxc_shares "${USER}"
+        whiptail --msgbox "${USER} added to 'lxc_shares' group in container ${CT_ID}." 8 40
+      else
+        # Ask if the user should be created
+        if (whiptail --yesno "User ${USER} does not exist in container ${CT_ID}. Create user?" 8 40); then
+          # Create the user with a home directory and default shell
+          pct exec ${CT_ID} -- useradd -m -s /bin/bash "${USER}"
+          pct exec ${CT_ID} -- usermod -aG lxc_shares "${USER}"
+          whiptail --msgbox "User ${USER} created and added to 'lxc_shares' group in container ${CT_ID}." 8 40
+        else
+          # Skip user creation
+          whiptail --msgbox "User ${USER} was not created. Let's try again." 8 40
+        fi
+      fi
+    done
+    break  # All users valid, move on
+  done
+}
+
+# Set ownership and permissions on the host directory
+function set_host_directory_permissions {
+  chown -R 100000:110000 ${HOST_DIR}
+  chmod 0770 ${HOST_DIR}
+  whiptail --msgbox "Ownership set to UID 100000 and GID 110000, permissions set to 770." 8 40
+}
+
+# Add the bind mount to the LXC configuration, replacing mp0 or lxc.mount.entry if necessary
+function update_lxc_config {
+  CONFIG_FILE="/etc/pve/lxc/${CT_ID}.conf"
+
+  # Check if mp0 exists
+  if grep -q "mp0:" "${CONFIG_FILE}"; then
+    # Remove mp0 and replace it with lxc.mount.entry
+    sed -i "/mp0:/d" "${CONFIG_FILE}"
+    echo "mp0 entry removed and replaced with lxc.mount.entry."
+    echo "lxc.mount.entry: ${HOST_DIR} ${CONTAINER_DIR} none bind 0 0" >> "${CONFIG_FILE}"
+    whiptail --msgbox "mp0 bind mount replaced with lxc.mount.entry in container ${CT_ID}." 8 40
+
+  # Check if lxc.mount.entry exists
+  elif grep -q "lxc.mount.entry" "${CONFIG_FILE}"; then
+    # Replace the existing lxc.mount.entry with new paths
+    sed -i "s|lxc.mount.entry: .*|lxc.mount.entry: ${HOST_DIR} ${CONTAINER_DIR} none bind 0 0|" "${CONFIG_FILE}"
+    whiptail --msgbox "Existing lxc.mount.entry updated with new paths in container ${CT_ID}." 8 40
+
+  # If neither exists, add the new lxc.mount.entry
+  else
+    echo "lxc.mount.entry: ${HOST_DIR} ${CONTAINER_DIR} none bind 0 0" >> "${CONFIG_FILE}"
+    whiptail --msgbox "Bind mount entry added to ${CONFIG_FILE} for container ${CT_ID}." 8 40
+  fi
+}
+
+# Restart the container
+function restart_container {
+  pct stop ${CT_ID}
+  pct start ${CT_ID}
+  whiptail --msgbox "Container ${CT_ID} restarted with bind mount applied." 8 40
+}
+
 # Main script execution
 header_info
 show_welcome
-get_host_directory  # Simulated file browsing for the host
-get_container_directory  # Simulated file browsing for the container
+get_container_id  # Loop back to container ID step if invalid
+check_existing_mount
+get_host_directory  # Manual host directory input
+get_container_directory  # Manual container directory input
+create_group_in_container
+add_users_to_group  # Loop back to username step if invalid; creates missing users
+set_host_directory_permissions
+update_lxc_config
+restart_container
+whiptail --msgbox "Script complete! Container ${CT_ID} is now configured with the bind mount." 8 40
