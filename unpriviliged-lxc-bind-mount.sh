@@ -1,108 +1,116 @@
 #!/usr/bin/env bash
 
-# Function to display header
+# Display a header using ASCII art
 function header_info {
 clear
 cat <<"EOF"
-   _____                 __    _            
-  / ___/__  ______  _____/ /_  (_)___  ____ _
-  \__ \/ / / / __ \/ ___/ __ \/ / __ \/ __ `/
- ___/ / /_/ / / / / /__/ / / / / / / / /_/ / 
-/____/\__, /_/ /_/\___/_/ /_/_/_/ /_/\__, /  
-     /____/                          /____/   
-                                     
+    ____  _           __   __  ___                  __ 
+   / __ )(_)___  ____/ /  /  |/  /___  __  ______  / /_
+  / __  / / __ \/ __  /  / /|_/ / __ \/ / / / __ \/ __/
+ / /_/ / / / / / /_/ /  / /  / / /_/ / /_/ / / / / /_  
+/_____/_/_/ /_/\__,_/  /_/  /_/\____/\__,_/_/ /_/\__/  
+
 EOF
 }
 
-# Prompt for container details and paths
+# Show the welcome message using whiptail
+function show_welcome {
+  whiptail --title "LXC Setup Script" --msgbox "Welcome to the LXC Bind Mount Setup Script!" 8 78
+}
+
+# Prompt for container details and paths using whiptail
 function prompt_for_input {
-  read -rp "Enter the ID of the LXC container you wish to bind the mount point to: " CT_ID
+  # Get the container ID
+  CT_ID=$(whiptail --inputbox "Enter the ID of the LXC container you wish to bind the mount point to:" 8 39 --title "Container ID" 3>&1 1>&2 2>&3)
+
+  # Validate if the container exists
   if [[ ! -f /etc/pve/lxc/${CT_ID}.conf ]]; then
-    echo "Container with ID ${CT_ID} does not exist. Please try again."
+    whiptail --msgbox "Container with ID ${CT_ID} does not exist. Please try again." 8 78
     exit 1
   fi
 
-  read -rp "Enter the full path of the host directory to bind mount (e.g., /mnt/lxc_shares/my_data): " HOST_DIR
+  # Prefilled with /tank/data for convenience
+  HOST_DIR=$(whiptail --inputbox "Enter the full path of the host directory to bind mount [default: /tank/data]:" 8 78 "/tank/data" 3>&1 1>&2 2>&3)
+
+  # Check if the directory exists
   if [[ ! -d "${HOST_DIR}" ]]; then
-    read -rp "${HOST_DIR} does not exist. Create it? (y/n): " CONFIRM
-    if [[ "${CONFIRM}" == "y" ]]; then
+    if (whiptail --yesno "${HOST_DIR} does not exist. Create it?" 8 78); then
       mkdir -p "${HOST_DIR}"
     else
-      echo "Host directory does not exist. Exiting."
+      whiptail --msgbox "Host directory does not exist. Exiting." 8 78
       exit 1
     fi
   fi
 
-  read -rp "Enter the full path inside the container for the mount (e.g., /mnt/my_data): " CONTAINER_DIR
+  # Get the container directory
+  CONTAINER_DIR=$(whiptail --inputbox "Enter the full path inside the container for the mount (e.g., /mnt/my_data):" 8 78 3>&1 1>&2 2>&3)
+
+  # Check if directory exists in the container
   if ! pct exec ${CT_ID} -- ls "${CONTAINER_DIR}" &>/dev/null; then
-    read -rp "Directory ${CONTAINER_DIR} does not exist in container. Create it? (y/n): " CONFIRM
-    if [[ "${CONFIRM}" == "y" ]]; then
+    if (whiptail --yesno "Directory ${CONTAINER_DIR} does not exist in container. Create it?" 8 78); then
       pct exec ${CT_ID} -- mkdir -p "${CONTAINER_DIR}"
     else
-      echo "Exiting."
+      whiptail --msgbox "Exiting." 8 78
       exit 1
     fi
   fi
 }
 
-# Function to create the group if it doesn't exist in the container
+# Create the group if it doesn't exist in the container
 function create_group_in_container {
   if pct exec ${CT_ID} -- getent group lxc_shares &>/dev/null; then
-    echo "Group 'lxc_shares' already exists in container ${CT_ID}."
+    whiptail --msgbox "Group 'lxc_shares' already exists in container ${CT_ID}." 8 78
   else
-    echo "Creating group 'lxc_shares' with GID 10000 in container ${CT_ID}..."
     pct exec ${CT_ID} -- groupadd -g 10000 lxc_shares
-    echo "Group 'lxc_shares' created."
+    whiptail --msgbox "Group 'lxc_shares' created in container ${CT_ID}." 8 78
   fi
 }
 
-# Function to add users to the lxc_shares group in the container
+# Add users to the lxc_shares group in the container
 function add_users_to_group {
-  read -rp "Enter the username(s) in the container you wish to add to the lxc_shares group (comma-separated, e.g., jellyfin,plex): " USERS
-  IFS=',' read -r -a USER_ARRAY <<< "$USERS"
+  USERS=$(whiptail --inputbox "Enter the username(s) in the container you wish to add to the lxc_shares group (comma-separated, e.g., jellyfin,plex):" 8 78 3>&1 1>&2 2>&3)
   
+  IFS=',' read -r -a USER_ARRAY <<< "$USERS"
   for USER in "${USER_ARRAY[@]}"; do
-    echo "Adding ${USER} to the 'lxc_shares' group in container ${CT_ID}..."
     pct exec ${CT_ID} -- usermod -aG lxc_shares ${USER}
-    echo "${USER} added to 'lxc_shares' group."
+    whiptail --msgbox "${USER} added to 'lxc_shares' group in container ${CT_ID}." 8 78
   done
 }
 
-# Function to set ownership and permissions on the host directory
+# Set ownership and permissions on the host directory
 function set_host_directory_permissions {
-  echo "Setting ownership and permissions for the host directory ${HOST_DIR}..."
   chown -R 100000:110000 ${HOST_DIR}
   chmod 0770 ${HOST_DIR}
-  echo "Ownership set to UID 100000 and GID 110000, permissions set to 770."
+  whiptail --msgbox "Ownership set to UID 100000 and GID 110000, permissions set to 770." 8 78
 }
 
-# Function to add the bind mount to the LXC configuration
+# Add the bind mount to the LXC configuration using lxc.mount.entry
 function update_lxc_config {
   CONFIG_FILE="/etc/pve/lxc/${CT_ID}.conf"
 
-  if grep -q "mp0:" "${CONFIG_FILE}"; then
-    echo "Bind mount already exists in the configuration for container ${CT_ID}. Exiting."
+  if grep -q "lxc.mount.entry" "${CONFIG_FILE}"; then
+    whiptail --msgbox "Bind mount already exists in the configuration for container ${CT_ID}." 8 78
     exit 1
   else
-    echo "Adding bind mount point to the container configuration."
-    echo "mp0: ${HOST_DIR},mp=${CONTAINER_DIR}" >> ${CONFIG_FILE}
-    echo "Bind mount point added to ${CONFIG_FILE}."
+    echo "lxc.mount.entry: ${HOST_DIR} ${CONTAINER_DIR} none bind 0 0" >> ${CONFIG_FILE}
+    whiptail --msgbox "Bind mount entry added to ${CONFIG_FILE}." 8 78
   fi
 }
 
-# Function to restart the container
+# Restart the container
 function restart_container {
   pct stop ${CT_ID}
   pct start ${CT_ID}
-  echo "Container ${CT_ID} restarted with bind mount applied."
+  whiptail --msgbox "Container ${CT_ID} restarted with bind mount applied." 8 78
 }
 
 # Main script execution
 header_info
+show_welcome
 prompt_for_input
 create_group_in_container
 add_users_to_group
 set_host_directory_permissions
 update_lxc_config
 restart_container
-echo "Script complete! Container ${CT_ID} is now configured with the bind mount."
+whiptail --msgbox "Script complete! Container ${CT_ID} is now configured with the bind mount." 8 78
