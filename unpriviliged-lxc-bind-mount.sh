@@ -74,15 +74,32 @@ function get_host_directory {
   fi
 }
 
-# Function to manually input container directory with pre-filled value if available
+# Function to manually input container directory with pre-filled value and check if it exists
 function get_container_directory {
-  CONTAINER_DIR=$(whiptail --inputbox "Enter the full path inside the container for the mount (e.g., /mnt/host-data):" 8 78 "${EXISTING_CONTAINER_DIR}" 3>&1 1>&2 2>&3)
+  while true; do
+    CONTAINER_DIR=$(whiptail --inputbox "Enter the full path inside the container for the mount (e.g., /mnt/host-data):" 8 78 "${EXISTING_CONTAINER_DIR}" 3>&1 1>&2 2>&3)
 
-  # If the user cancels or no valid selection is made
-  if [[ -z "$CONTAINER_DIR" ]]; then
-    whiptail --msgbox "No directory selected. Exiting..." 8 40
-    exit 1
-  fi
+    # If the user cancels or no valid selection is made
+    if [[ -z "$CONTAINER_DIR" ]]; then
+      whiptail --msgbox "No directory selected. Exiting..." 8 40
+      exit 1
+    fi
+
+    # Check if the directory exists in the container
+    if pct exec ${CT_ID} -- [ -d "${CONTAINER_DIR}" ]; then
+      break  # Directory exists, proceed
+    else
+      # Ask if the user wants to create the directory
+      if whiptail --yesno "The directory ${CONTAINER_DIR} does not exist in the container. Do you want to create it?" 8 60; then
+        pct exec ${CT_ID} -- mkdir -p "${CONTAINER_DIR}"
+        whiptail --msgbox "Directory ${CONTAINER_DIR} created in container ${CT_ID}." 8 40
+        break  # Directory created, proceed
+      else
+        # Ask the user to re-enter the directory
+        whiptail --msgbox "Please enter a valid directory path." 8 40
+      fi
+    fi
+  done
 }
 
 # Function to create the group if it doesn't exist in the container
@@ -176,7 +193,7 @@ show_welcome
 get_container_id  # Loop back to container ID step if invalid
 check_existing_mount  # Check if there are existing mounts and prefill paths
 get_host_directory  # Manual host directory input with prefilled paths
-get_container_directory  # Manual container directory input with prefilled paths
+get_container_directory  # Manual container directory input with prefilled paths, checks for existence
 create_group_in_container
 add_users_to_group  # Loop back to username step if invalid; creates missing users
 set_host_directory_permissions
