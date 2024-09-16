@@ -163,15 +163,28 @@ function set_host_directory_permissions {
   whiptail --msgbox "Ownership set to UID 100000 and GID 110000, permissions set to 770." 8 78
 }
 
-# Add the bind mount to the LXC configuration using lxc.mount.entry
+# Add the bind mount to the LXC configuration, replacing mp0 or lxc.mount.entry if necessary
 function update_lxc_config {
   CONFIG_FILE="/etc/pve/lxc/${CT_ID}.conf"
 
-  if grep -q "lxc.mount.entry" "${CONFIG_FILE}"; then
-    whiptail --msgbox "Bind mount already exists in the configuration for container ${CT_ID}." 8 78
+  # Check if mp0 exists
+  if grep -q "mp0:" "${CONFIG_FILE}"; then
+    # Remove mp0 and replace it with lxc.mount.entry
+    sed -i "/mp0:/d" "${CONFIG_FILE}"
+    echo "mp0 entry removed and replaced with lxc.mount.entry."
+    echo "lxc.mount.entry: ${HOST_DIR} ${CONTAINER_DIR} none bind 0 0" >> "${CONFIG_FILE}"
+    whiptail --msgbox "mp0 bind mount replaced with lxc.mount.entry in container ${CT_ID}." 8 78
+
+  # Check if lxc.mount.entry exists
+  elif grep -q "lxc.mount.entry" "${CONFIG_FILE}"; then
+    # Replace the existing lxc.mount.entry with new paths
+    sed -i "s|lxc.mount.entry: .*|lxc.mount.entry: ${HOST_DIR} ${CONTAINER_DIR} none bind 0 0|" "${CONFIG_FILE}"
+    whiptail --msgbox "Existing lxc.mount.entry updated with new paths in container ${CT_ID}." 8 78
+
+  # If neither exists, add the new lxc.mount.entry
   else
-    echo "lxc.mount.entry: ${HOST_DIR} ${CONTAINER_DIR} none bind 0 0" >> ${CONFIG_FILE}
-    whiptail --msgbox "Bind mount entry added to ${CONFIG_FILE}." 8 78
+    echo "lxc.mount.entry: ${HOST_DIR} ${CONTAINER_DIR} none bind 0 0" >> "${CONFIG_FILE}"
+    whiptail --msgbox "Bind mount entry added to ${CONFIG_FILE} for container ${CT_ID}." 8 78
   fi
 }
 
