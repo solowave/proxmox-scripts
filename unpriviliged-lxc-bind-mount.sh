@@ -18,6 +18,27 @@ function show_welcome {
   whiptail --title "LXC Setup Script" --msgbox "Welcome to the LXC Bind Mount Setup Script!" 8 78
 }
 
+# Function to check if a mount point exists in the config file and pre-fill the paths
+function check_existing_mount {
+  CONFIG_FILE="/etc/pve/lxc/${CT_ID}.conf"
+  if grep -q "mp0:" "${CONFIG_FILE}"; then
+    # Extract existing mp0 paths for host and container
+    EXISTING_HOST_DIR=$(grep "mp0:" "${CONFIG_FILE}" | cut -d ',' -f 1 | cut -d ':' -f 2)
+    EXISTING_CONTAINER_DIR=$(grep "mp0:" "${CONFIG_FILE}" | cut -d ',' -f 2 | cut -d '=' -f 2)
+    # Replace mp0 with lxc.mount.entry
+    sed -i "/mp0:/d" "${CONFIG_FILE}"
+    echo "Found mp0 mount. Replacing with lxc.mount.entry."
+  elif grep -q "lxc.mount.entry:" "${CONFIG_FILE}"; then
+    # Extract existing lxc.mount.entry paths
+    EXISTING_HOST_DIR=$(grep "lxc.mount.entry:" "${CONFIG_FILE}" | cut -d ' ' -f 2)
+    EXISTING_CONTAINER_DIR=$(grep "lxc.mount.entry:" "${CONFIG_FILE}" | cut -d ' ' -f 3)
+  else
+    # Default paths if no mount point is found
+    EXISTING_HOST_DIR="/tank/data"
+    EXISTING_CONTAINER_DIR="/mnt/my_data"
+  fi
+}
+
 # Prompt for container details and paths using whiptail
 function prompt_for_input {
   # Get the container ID
@@ -29,8 +50,11 @@ function prompt_for_input {
     exit 1
   fi
 
-  # Prefilled with /tank/data for convenience
-  HOST_DIR=$(whiptail --inputbox "Enter the full path of the host directory to bind mount [default: /tank/data]:" 8 78 "/tank/data" 3>&1 1>&2 2>&3)
+  # Check if a mount point already exists and pre-fill paths
+  check_existing_mount
+
+  # Prefill with existing or default host path
+  HOST_DIR=$(whiptail --inputbox "Enter the full path of the host directory to bind mount:" 8 78 "${EXISTING_HOST_DIR}" 3>&1 1>&2 2>&3)
 
   # Check if the directory exists
   if [[ ! -d "${HOST_DIR}" ]]; then
@@ -42,8 +66,8 @@ function prompt_for_input {
     fi
   fi
 
-  # Get the container directory
-  CONTAINER_DIR=$(whiptail --inputbox "Enter the full path inside the container for the mount (e.g., /mnt/my_data):" 8 78 3>&1 1>&2 2>&3)
+  # Prefill with existing or default container path
+  CONTAINER_DIR=$(whiptail --inputbox "Enter the full path inside the container for the mount:" 8 78 "${EXISTING_CONTAINER_DIR}" 3>&1 1>&2 2>&3)
 
   # Check if directory exists in the container
   if ! pct exec ${CT_ID} -- ls "${CONTAINER_DIR}" &>/dev/null; then
@@ -68,7 +92,9 @@ function create_group_in_container {
 
 # Add users to the lxc_shares group in the container
 function add_users_to_group {
-  USERS=$(whiptail --inputbox "Enter the username(s) in the container you wish to add to the lxc_shares group (comma-separated, e.g., jellyfin,plex):" 8 78 3>&1 1>&2 2>&3)
+  # Prefill the username with the container's hostname
+  CONTAINER_HOSTNAME=$(pct exec ${CT_ID} -- hostname)
+  USERS=$(whiptail --inputbox "Enter the username(s) in the container you wish to add to the lxc_shares group (comma-separated, pre-filled with container hostname):" 8 78 "${CONTAINER_HOSTNAME}" 3>&1 1>&2 2>&3)
   
   IFS=',' read -r -a USER_ARRAY <<< "$USERS"
   for USER in "${USER_ARRAY[@]}"; do
@@ -90,7 +116,6 @@ function update_lxc_config {
 
   if grep -q "lxc.mount.entry" "${CONFIG_FILE}"; then
     whiptail --msgbox "Bind mount already exists in the configuration for container ${CT_ID}." 8 78
-    exit 1
   else
     echo "lxc.mount.entry: ${HOST_DIR} ${CONTAINER_DIR} none bind 0 0" >> ${CONFIG_FILE}
     whiptail --msgbox "Bind mount entry added to ${CONFIG_FILE}." 8 78
