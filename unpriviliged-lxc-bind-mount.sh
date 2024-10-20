@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Trap Ctrl+C for graceful exit
+# Trap Ctrl+C and exit gracefully
 trap ctrl_c INT
 function ctrl_c() {
     whiptail --msgbox "Script interrupted. Exiting now!" 8 40
@@ -32,12 +32,12 @@ function check_existing_mount {
   if grep -q "mp0:" "${CONFIG_FILE}"; then
     # Extract existing mp0 paths for host and container, remove mp0
     EXISTING_HOST_DIR=$(grep "mp0:" "${CONFIG_FILE}" | cut -d ',' -f 1 | cut -d ':' -f 2)
-    EXISTING_CONTAINER_DIR=$(grep "mp0:" "${CONFIG_FILE}" | cut -d ',' -f 2 | cut -d '=' -f 2)
+    EXISTING_CONTAINER_DIR="/$(grep "mp0:" "${CONFIG_FILE}" | cut -d ',' -f 2 | cut -d '=' -f 2)"  # Add leading slash back for user input
     sed -i "/mp0:/d" "${CONFIG_FILE}"  # Remove mp0 entry
   elif grep -q "lxc.mount.entry:" "${CONFIG_FILE}"; then
-    # Extract existing lxc.mount.entry paths
+    # Extract existing lxc.mount.entry paths, ensure leading slash is shown in the input
     EXISTING_HOST_DIR=$(grep "lxc.mount.entry:" "${CONFIG_FILE}" | cut -d ' ' -f 2)
-    EXISTING_CONTAINER_DIR=$(grep "lxc.mount.entry:" "${CONFIG_FILE}" | cut -d ' ' -f 3)
+    EXISTING_CONTAINER_DIR="/$(grep "lxc.mount.entry:" "${CONFIG_FILE}" | cut -d ' ' -f 3)"  # Add leading slash back for user input
   else
     # Default paths if no existing mount point is found
     EXISTING_HOST_DIR="/tank/data"
@@ -66,11 +66,11 @@ function get_host_directory {
   [[ -z "$HOST_DIR" ]] && whiptail --msgbox "No directory selected. Exiting..." 8 40 && exit 1
 }
 
-# Manually input container directory path (must include leading slash but omit it in lxc.mount.entry)
+# Manually input container directory, check if it exists, and create if necessary
 function get_container_directory {
   while true; do
     CONTAINER_DIR=$(whiptail --inputbox "Enter the full path inside the container for the bind mount (e.g., /mnt/host-data):" 8 78 "${EXISTING_CONTAINER_DIR}" 3>&1 1>&2 2>&3)
-    
+
     # Exit if no input
     [[ -z "$CONTAINER_DIR" ]] && whiptail --msgbox "No directory selected. Exiting..." 8 40 && exit 1
     
@@ -138,7 +138,7 @@ function set_host_directory_permissions {
   whiptail --msgbox "Ownership set to UID 100000 and GID 110000, permissions set to 770." 8 40
 }
 
-# Add the bind mount to the LXC configuration (omit leading slash in container path)
+# Add the bind mount to the LXC configuration (omit leading slash for snapshots)
 function update_lxc_config {
   CONFIG_FILE="/etc/pve/lxc/${CT_ID}.conf"
   
